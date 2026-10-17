@@ -15,6 +15,7 @@
  */
 
 #include "catch.hpp"
+#include "io/rest/cluster_redirect_test_support.hpp"
 #include "scan_manager/config.hpp"
 #include "sirius_config.hpp"
 #include "utils/sirius_test_env.hpp"
@@ -24,6 +25,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 using sirius::io::cache::cache_mode;
 using sirius::io::cache::eviction_policy;
@@ -694,4 +697,38 @@ TEST_CASE("sirius_config forces the sirius backend for multi-GPU",
                                      "      backend: kvikio\n");
 
   CHECK(cfg.backend == io_backend::sirius);
+}
+
+TEST_CASE("sirius_config loads scoped cluster redirect settings",
+          "[scan_manager][config][scan_manager_config][rest_cluster_redirect]")
+{
+  auto cfg =
+    load_scan_manager("cluster-redirect-config.yaml",
+                      single_gpu_scan_manager_yaml(
+                        "      rest:\n"
+                        "        cluster_redirect:\n"
+                        "          enabled: true\n"
+                        "          origin: gateway:51080\n"
+                        "          allowed_targets: [storage-a:51081, storage-b:51081]\n"));
+  sirius::test::rest_redirect::require_policy(sirius::io::rest::config{}, false, "", {});
+  sirius::test::rest_redirect::require_policy(
+    cfg.rest, true, "gateway:51080", {"storage-a:51081", "storage-b:51081"});
+}
+
+TEST_CASE("sirius_config validates cluster redirect scope and rejects unknown keys",
+          "[scan_manager][config][scan_manager_config][rest_cluster_redirect]")
+{
+  for (auto const& [body, key] : std::vector<std::pair<std::string, std::string>>{
+         {"          enabled: true\n          allowed_targets: [target:51081]\n", "origin"},
+         {"          enabled: true\n          origin: gateway:51080\n"
+          "          allowed_targets: []\n",
+          "allowed_targets"},
+         {"          enabled: false\n          unexpected_option: 1\n", "unexpected_option"}}) {
+    DYNAMIC_SECTION(key)
+    {
+      auto yaml = single_gpu_scan_manager_yaml("      rest:\n        cluster_redirect:\n" + body);
+      CHECK_THROWS_WITH(load_scan_manager("cluster-redirect-invalid.yaml", yaml),
+                        Catch::Matchers::ContainsSubstring(key));
+    }
+  }
 }
